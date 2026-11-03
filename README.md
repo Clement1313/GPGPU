@@ -117,7 +117,7 @@ But for the exercise, having you do an optimized histogram is cool :)
 * To build, execute the following commands :
 
 ```bash
-mkdir build \&\& cd build
+mkdir build && cd build
 cmake ..
 make -j
 ```
