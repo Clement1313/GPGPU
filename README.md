@@ -132,6 +132,7 @@ cmake -DCMAKE\_BUILD\_TYPE=Debug ..
 
 ```bash
 cd build
-./main
+./main --mode MODE
 ```
+`MODE = cpu|gpu|industial|check`
 
