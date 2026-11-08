@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <nvtx3/nvtx3.hpp>
+#include <cuda/std/span>
+#include <cuda/buffer>
 
 void fix_image_gpu(Image& to_fix)
 {
@@ -76,8 +78,62 @@ void fix_image_gpu(Image& to_fix)
     );
 }
 
+__global__
+void kernel_reduce(cuda::std::span<int> buffer, cuda::std::span<int> odata) {
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    extern __shared__ int data[];
+
+    if (i < buffer.size())
+        data[tid] = buffer[i];
+    else
+        data[tid] = 0;
+
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s /= 2) {
+
+        if (tid < s)
+            data[tid] += data[tid + s];
+
+        __syncthreads();
+    }
+
+    if (tid == 0) odata[blockIdx.x] = data[0];
+}
+
 int compute_total_gpu(const Image& img) {
 
-    nvtx3::scoped_range range("This is a push/pop range");
-    return 1;
+    nvtx3::scoped_range range("My Reduce");
+
+    cuda::stream stream{cuda::device_ref(0)};
+    cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::devices[0]);
+
+    int size = img.width * img.height;;
+    int block_size = 1024;
+
+    int nb_block = cuda::ceil_div(size, block_size);
+    cuda::device_buffer<int> tmp(stream, mr, nb_block, cuda::no_init);
+
+    kernel_reduce<<<nb_block, block_size, block_size * sizeof(int), stream.get()>>>(cuda::std::span(img.buffer, size), tmp);
+    
+    int nb_block_reduce = cuda::ceil_div(nb_block, block_size);
+    cuda::device_buffer<int> tmp2(stream, mr, 1, cuda::no_init);
+
+    kernel_reduce<<<nb_block_reduce, block_size, block_size * sizeof(int), stream.get()>>>(tmp, tmp2);
+
+    int result;
+
+    cudaMemcpyAsync(
+        &result,
+        tmp2.data(),
+        sizeof(int),
+        cudaMemcpyDeviceToHost,
+        stream.get()
+    );
+
+    stream.sync();
+
+    return result;
 }
