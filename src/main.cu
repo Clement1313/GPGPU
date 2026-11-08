@@ -33,6 +33,26 @@ static Mode parse_mode(int argc, char* argv[])
     return Mode::Cpu;
 }
 
+static std::string parse_input(int argc, char* argv[])
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) == "--input")
+        {
+            if (i + 1 < argc)
+                return argv[i + 1];
+
+            std::cerr << "Missing path after --input\n";
+            std::exit(1);
+        }
+    }
+
+    std::cerr << "Usage: " << argv[0]
+              << " --input <file|directory> --mode <cpu|gpu|industial|check>\n";
+    std::exit(1);
+}
+
+
 int main(int argc, char* argv[])
 {
     const Mode mode = parse_mode(argc, argv);
@@ -43,10 +63,40 @@ int main(int argc, char* argv[])
 
     // - Get file paths
 
-    using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
+    namespace fs = std::filesystem;
+
+    const fs::path input = parse_input(argc, argv);
     std::vector<std::string> filepaths;
-    for (const auto& dir_entry : recursive_directory_iterator("/afs/cri.epita.fr/resources/teach/IRGPUA/images"))
-        filepaths.emplace_back(dir_entry.path());
+
+    if (fs::is_regular_file(input))
+    {
+        // Single file
+        filepaths.push_back(input.string());
+    }
+    else if (fs::is_directory(input))
+    {
+        // Directory (recursive)
+        for (const auto& entry : fs::recursive_directory_iterator(input))
+        {
+            if (entry.is_regular_file())
+                filepaths.push_back(entry.path().string());
+        }
+    }
+    else
+    {
+        std::cerr << "Invalid input: " << input << std::endl;
+        return 1;
+    }
+
+    std::sort(filepaths.begin(), filepaths.end());
+
+    if (filepaths.empty())
+    {
+        std::cerr << "No files found!" << std::endl;
+        return 1;
+    }
+
+    std::cout << "Found " << filepaths.size() << " files\n";
 
     // - Init pipeline object
 
@@ -84,7 +134,7 @@ int main(int argc, char* argv[])
                 break;
             case Mode::Gpu:
                 // TODO
-                // fix_image_gpu(images[i]);
+                fix_image_gpu(images[i]);
                 break;
             case Mode::Industrial:
                 // TODO
@@ -123,6 +173,8 @@ int main(int argc, char* argv[])
                 image.to_sort.total = std::reduce(image.buffer, image.buffer + image_size, 0);
                 break;
             case Mode::Gpu:
+                image.to_sort.total = compute_total_gpu(image);
+                break;
             case Mode::Check:
                  // TODO
                 // image.to_sort.total = compute_total_gpu(image);

@@ -1,2 +1,4 @@
 build
 *.pgm
+.vscode/
+dataset/
