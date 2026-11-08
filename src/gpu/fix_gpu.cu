@@ -5,6 +5,7 @@
 #include <numeric>
 #include <algorithm>
 #include <cmath>
+#include <nvtx3/nvtx3.hpp>
 
 void fix_image_gpu(Image& to_fix)
 {
@@ -76,5 +77,7 @@ void fix_image_gpu(Image& to_fix)
 }
 
 int compute_total_gpu(const Image& img) {
+
+    nvtx3::scoped_range range("This is a push/pop range");
     return 1;
 }

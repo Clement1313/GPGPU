@@ -134,7 +134,7 @@ int main(int argc, char* argv[])
                 break;
             case Mode::Gpu:
                 // TODO
-                // fix_image_gpu(images[i]);
+                fix_image_gpu(images[i]);
                 break;
             case Mode::Industrial:
                 // TODO
