@@ -111,6 +111,24 @@ int compute_total_gpu(const Image& img) {
     cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::devices[0]);
 
     int size = img.width * img.height;;
+
+    cuda::device_buffer<int> input(
+        stream,
+        mr,
+        size,
+        cuda::no_init
+    );
+
+    cudaMemcpyAsync(
+        input.data(), 
+        img.buffer, 
+        size * sizeof(int), 
+        cudaMemcpyHostToDevice,
+        stream.get()
+    );
+
+    cuda::std::span<int> input_span = cuda::std::span(input.data(), size);
+
     int block_size = 1024;
 
     int nb_block = cuda::ceil_div(size, block_size);
@@ -122,10 +140,12 @@ int compute_total_gpu(const Image& img) {
         cuda::no_init
     );
 
-    kernel_reduce<<<nb_block, block_size, block_size * sizeof(int), stream.get()>>>(cuda::std::span(img.buffer, size), tmp);
+    cuda::std::span<int> tmp_span = cuda::std::span(tmp.data(), nb_block);
+
+    kernel_reduce<<<nb_block, block_size, block_size * sizeof(int), stream.get()>>>(input_span, tmp_span);
     
     int nb_block_reduce = cuda::ceil_div(nb_block, block_size);
-    kernel_reduce<<<nb_block_reduce, block_size, block_size * sizeof(int), stream.get()>>>(tmp, tmp);
+    kernel_reduce<<<nb_block_reduce, block_size, block_size * sizeof(int), stream.get()>>>(tmp_span, tmp_span);
 
     int result;
 
