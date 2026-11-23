@@ -9,20 +9,79 @@
 #include <cuda/std/span>
 #include <cuda/buffer>
 
+constexpr int GARBAGE_VALUE = -27;
+
+__global__
+void kernel_predicate(cuda::std::span<int> buffer, cuda::std::span<int> predicate) {
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (id < buffer.size())
+        predicate[id] = buffer[id] != GARBAGE_VALUE;
+}
+
 void fix_image_gpu(Image& to_fix)
 {
     const int image_size = to_fix.width * to_fix.height;
+
+    // CUDA
+
+    const int size = to_fix.size();
+
+    cuda::stream stream{cuda::device_ref(0)};
+    cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::device_ref(0));
+
+    int block_size = 1024;
+    int nb_block = cuda::ceil_div(block_size, size);
+
+    cuda::device_buffer<int> buffer(
+        stream,
+        mr,
+        size,
+        cuda::no_init
+    );
+
+    cudaMemcpyAsync(
+        buffer.data(),
+        to_fix.buffer,
+        size * sizeof(int),
+        cudaMemcpyHostToDevice,
+        stream.get()
+    );
+
+    cuda::device_buffer<int> device_predicate(
+        stream,
+        mr,
+        size,
+        cuda::no_init
+    );
+
+    kernel_predicate<<<nb_block, block_size, 0, stream.get()>>>(buffer, device_predicate);
+
+    std::vector<int> predicate(size, 0);
+
+    cudaMemcpyAsync(
+        device_predicate.data(),
+        predicate.data(),
+        size * sizeof(int),
+        cudaMemcpyDeviceToHost,
+        stream.get()
+    );
+
+    stream.sync();
 
     // #1 Compact
 
     // Build predicate vector
 
+
+    /*
     std::vector<int> predicate(to_fix.size(), 0);
 
-    constexpr int garbage_val = -27;
     for (int i = 0; i < to_fix.size(); ++i)
-        if (to_fix.buffer[i] != garbage_val)
+        if (to_fix.buffer[i] != GARBAGE_VALUE)
             predicate[i] = 1;
+    */
+    
 
     // Compute the exclusive sum of the predicate
 
@@ -31,7 +90,7 @@ void fix_image_gpu(Image& to_fix)
     // Scatter to the corresponding addresses
 
     for (std::size_t i = 0; i < predicate.size(); ++i)
-        if (to_fix.buffer[i] != garbage_val)
+        if (to_fix.buffer[i] != GARBAGE_VALUE)
             to_fix.buffer[predicate[i]] = to_fix.buffer[i];
 
 
@@ -108,7 +167,7 @@ int compute_total_gpu(const Image& img) {
     nvtx3::scoped_range range("My Reduce");
 
     cuda::stream stream{cuda::device_ref(0)};
-    cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::devices[0]);
+    cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::device_ref(0));
 
     int size = img.width * img.height;;
 
