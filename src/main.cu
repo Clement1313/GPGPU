@@ -162,30 +162,33 @@ int main(int argc, char* argv[])
     // TODO : make it GPU compatible (aka faster)
     // You can use multiple CPU threads for your GPU version using openmp or not
     // Up to you :)
-    #pragma omp parallel for
-    for (int i = 0; i < nb_images; ++i)
     {
-        auto& image = images[i];
-        const int image_size = image.width * image.height;
-        switch (mode)
+        nvtx3::scoped_range range("compute total all images");
+        #pragma omp parallel for
+        for (int i = 0; i < nb_images; ++i)
         {
-            case Mode::Cpu:
-                image.to_sort.total = std::reduce(image.buffer, image.buffer + image_size, 0);
-                break;
-            case Mode::Gpu:
-                image.to_sort.total = compute_total_gpu(image);
-                break;
-            case Mode::Check:
-                 // TODO
-                // image.to_sort.total = compute_total_gpu(image);
-                break;
-            case Mode::Industrial:
-                // TODO :
-                // image.to_sort.total = compute_total_industial(image);
-                break;
+            auto& image = images[i];
+            const int image_size = image.width * image.height;
+            switch (mode)
+            {
+                case Mode::Cpu:
+                    image.to_sort.total = std::reduce(image.buffer, image.buffer + image_size, 0);
+                    break;
+                case Mode::Gpu:
+                    image.to_sort.total = compute_total_gpu(image);
+                    break;
+                case Mode::Check:
+                    // TODO
+                    // image.to_sort.total = compute_total_gpu(image);
+                    break;
+                case Mode::Industrial:
+                    // TODO :
+                    // image.to_sort.total = compute_total_industial(image);
+                    break;
+            }
         }
     }
-
+    
     // - All totals are known, sort images accordingly (OPTIONAL)
     // Moving the actual images is too expensive, sort image indices instead
     // Copying to an id array and sort it instead
