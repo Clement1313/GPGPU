@@ -31,7 +31,12 @@ void fix_image_gpu(Image& to_fix)
     cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::device_ref(0));
 
     int block_size = 1024;
-    int nb_block = cuda::ceil_div(block_size, size);
+    int nb_block = cuda::ceil_div(size, block_size);
+
+
+    // #1 Compact
+
+    // Build predicate vector
 
     cuda::device_buffer<int> buffer(
         stream,
@@ -60,18 +65,14 @@ void fix_image_gpu(Image& to_fix)
     std::vector<int> predicate(size, 0);
 
     cudaMemcpyAsync(
-        device_predicate.data(),
         predicate.data(),
+        device_predicate.data(),
         size * sizeof(int),
         cudaMemcpyDeviceToHost,
         stream.get()
     );
 
     stream.sync();
-
-    // #1 Compact
-
-    // Build predicate vector
 
 
     /*
