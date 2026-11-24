@@ -8,6 +8,7 @@
 #include <nvtx3/nvtx3.hpp>
 #include <cuda/std/span>
 #include <cuda/buffer>
+#include <cuda/atomic>
 
 constexpr int GARBAGE_VALUE = -27;
 
@@ -17,6 +18,78 @@ void kernel_predicate(cuda::std::span<int> buffer, cuda::std::span<int> predicat
 
     if (id < buffer.size())
         predicate[id] = buffer[id] != GARBAGE_VALUE;
+    
+    /*
+    if (id + 1 < buffer.size())
+        excl_predicate[id + 1] = buffer[id] != GARBAGE_VALUE;
+
+    if (id == 0)
+        excl_predicate[id] = 0;
+    */
+}
+
+__global__
+void kernel_scan(cuda::std::span<int> buffer, cuda::std::span<int> out)
+{
+    int tid = threadIdx.x;
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    for (int s = 1; s < blockDim.x; s *= 2) {
+
+        int tmp = id < buffer.size() ? buffer[id] : 0;
+        __syncthreads();
+
+        if (tid + s < blockDim.x && id + s < buffer.size()) {
+            buffer[id + s] += tmp;
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        int last = min(blockDim.x * (blockIdx.x + 1), (int)buffer.size()) - 1;
+        out[blockIdx.x] = buffer[last];
+    } 
+}
+
+__global__
+void kernel_scan_aux(cuda::std::span<int> buffer)
+{
+    int tid = threadIdx.x;
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    for (int s = 1; s < blockDim.x; s *= 2) {
+
+        int tmp = id < buffer.size() ? buffer[id] : 0;
+        __syncthreads();
+
+        if (tid + s < blockDim.x && id + s < buffer.size()) {
+            buffer[id + s] += tmp;
+        }
+        __syncthreads();
+    }
+}
+
+__global__
+void propagate(cuda::std::span<int> buffer, cuda::std::span<int> val)
+{
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    int sum = blockIdx.x != 0 ? val[blockIdx.x - 1] : 0;
+
+    if (id < buffer.size())
+        buffer[id] += sum;
+}
+
+__global__
+void kernel_exclusive_scan(cuda::std::span<int> buffer, cuda::std::span<int> tmp) {
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (id + 1 < buffer.size()) {
+        buffer[id + 1] = tmp[id];
+    }
+
+    if (id == 0)
+        buffer[id] = 0;
 }
 
 void fix_image_gpu(Image& to_fix)
@@ -62,6 +135,34 @@ void fix_image_gpu(Image& to_fix)
 
     kernel_predicate<<<nb_block, block_size, 0, stream.get()>>>(buffer, device_predicate);
 
+    /*
+    std::vector<int> predicate(to_fix.size(), 0);
+
+    for (int i = 0; i < to_fix.size(); ++i)
+        if (to_fix.buffer[i] != GARBAGE_VALUE)
+            predicate[i] = 1;
+    */
+    
+
+    // Compute the exclusive sum of the predicate
+
+    cuda::device_buffer<int> tmp(
+        stream,
+        mr,
+        size,
+        cuda::no_init
+    );
+
+    kernel_scan<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
+
+    kernel_scan_aux<<<cuda::ceil_div(nb_block, block_size), block_size, 0, stream.get()>>>(tmp);
+
+    propagate<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
+
+    cudaMemcpyAsync(tmp.data(), device_predicate.data(), size * sizeof(int), cudaMemcpyDeviceToDevice, stream.get());
+
+    kernel_exclusive_scan<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
+
     std::vector<int> predicate(size, 0);
 
     cudaMemcpyAsync(
@@ -74,19 +175,7 @@ void fix_image_gpu(Image& to_fix)
 
     stream.sync();
 
-
-    /*
-    std::vector<int> predicate(to_fix.size(), 0);
-
-    for (int i = 0; i < to_fix.size(); ++i)
-        if (to_fix.buffer[i] != GARBAGE_VALUE)
-            predicate[i] = 1;
-    */
-    
-
-    // Compute the exclusive sum of the predicate
-
-    std::exclusive_scan(predicate.begin(), predicate.end(), predicate.begin(), 0);
+    //std::exclusive_scan(predicate.begin(), predicate.end(), predicate.begin(), 0);
 
     // Scatter to the corresponding addresses
 
