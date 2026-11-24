@@ -97,6 +97,19 @@ void kernel_scatter(cuda::std::span<int> buffer, cuda::std::span<int> excl_predi
         buffer[excl_predicate[id]] = val;
 }
 
+__global__
+void kernel_fix_map(cuda::std::span<int> buffer, int image_size) {
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (id >= image_size)
+        return;
+
+    if      (id % 4 == 0)   buffer[id] += 1;
+    else if (id % 4 == 1)   buffer[id] -= 5;
+    else if (id % 4 == 2)   buffer[id] += 3;
+    else if (id % 4 == 3)   buffer[id] -= 8;
+}
+
 void fix_image_gpu(Image& to_fix)
 {
     const int image_size = to_fix.width * to_fix.height;
@@ -173,9 +186,6 @@ void fix_image_gpu(Image& to_fix)
 
     kernel_scatter<<<nb_block, block_size, 0, stream.get()>>>(buffer, device_predicate);
 
-    cudaMemcpyAsync(to_fix.buffer, buffer.data(), size * sizeof(int), cudaMemcpyDeviceToHost, stream.get());
-
-    stream.sync();
     /*
     for (std::size_t i = 0; i < predicate.size(); ++i)
         if (to_fix.buffer[i] != GARBAGE_VALUE)
@@ -183,7 +193,16 @@ void fix_image_gpu(Image& to_fix)
     */
 
     // #2 Apply map to fix pixels
+    
+    int img_nb_block = cuda::ceil_div(image_size, block_size);
 
+    kernel_fix_map<<<img_nb_block, block_size, 0, stream.get()>>>(buffer, image_size);
+
+    cudaMemcpyAsync(to_fix.buffer, buffer.data(), size * sizeof(int), cudaMemcpyDeviceToHost, stream.get());
+
+    stream.sync();
+
+    /*
     for (int i = 0; i < image_size; ++i)
     {
         if (i % 4 == 0)
@@ -195,6 +214,7 @@ void fix_image_gpu(Image& to_fix)
         else if (i % 4 == 3)
             to_fix.buffer[i] -= 8;
     }
+    */
 
     // #3 Histogram equalization
 
