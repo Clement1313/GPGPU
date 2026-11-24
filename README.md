@@ -134,5 +134,5 @@ cmake -DCMAKE\_BUILD\_TYPE=Debug ..
 cd build
 ./main --mode MODE
 ```
-`MODE = cpu|gpu|industial|check`
+`MODE = cpu|gpu|industrial|check`
 

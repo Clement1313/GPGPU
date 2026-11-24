@@ -26,9 +26,9 @@ static Mode parse_mode(int argc, char* argv[])
             const std::string m = argv[i + 1];
             if (m == "cpu")   return Mode::Cpu;
             if (m == "gpu")   return Mode::Gpu;
-            if (m == "industial")   return Mode::Industrial;
+            if (m == "industrial")   return Mode::Industrial;
             if (m == "check") return Mode::Check;
-            std::cerr << "Unknown mode: " << m << " (cpu|gpu|industial|check)" << std::endl;
+            std::cerr << "Unknown mode: " << m << " (cpu|gpu|industrial|check)" << std::endl;
             std::exit(1);
         }
     return Mode::Cpu;
@@ -57,7 +57,7 @@ static std::string parse_input(int argc, char* argv[])
     }
 
     std::cerr << "Usage: " << argv[0]
-              << " --input <file|directory> --mode <cpu|gpu|industial|check>\n";
+              << " --input <file|directory> --mode <cpu|gpu|industrial|check>\n";
     std::exit(1);
 }
 
@@ -150,7 +150,7 @@ int main(int argc, char* argv[])
                 break;
             case Mode::Industrial:
                 // TODO
-                // fix_image_industial(images[i]);
+                // fix_image_industrial(images[i]);
                 break;
             case Mode::Check:
             {
@@ -195,7 +195,7 @@ int main(int argc, char* argv[])
                     break;
                 case Mode::Industrial:
                     // TODO :
-                    // image.to_sort.total = compute_total_industial(image);
+                    // image.to_sort.total = compute_total_industrial(image);
                     break;
             }
         }
