@@ -18,14 +18,6 @@ void kernel_predicate(cuda::std::span<int> buffer, cuda::std::span<int> predicat
 
     if (id < buffer.size())
         predicate[id] = buffer[id] != GARBAGE_VALUE;
-    
-    /*
-    if (id + 1 < buffer.size())
-        excl_predicate[id + 1] = buffer[id] != GARBAGE_VALUE;
-
-    if (id == 0)
-        excl_predicate[id] = 0;
-    */
 }
 
 __global__
@@ -92,6 +84,19 @@ void kernel_exclusive_scan(cuda::std::span<int> buffer, cuda::std::span<int> tmp
         buffer[id] = 0;
 }
 
+__global__
+void kernel_scatter(cuda::std::span<int> buffer, cuda::std::span<int> excl_predicate) {
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (id >= buffer.size())
+        return;
+
+    int val = buffer[id];
+
+    if (val != GARBAGE_VALUE)
+        buffer[excl_predicate[id]] = val;
+}
+
 void fix_image_gpu(Image& to_fix)
 {
     const int image_size = to_fix.width * to_fix.height;
@@ -142,7 +147,6 @@ void fix_image_gpu(Image& to_fix)
         if (to_fix.buffer[i] != GARBAGE_VALUE)
             predicate[i] = 1;
     */
-    
 
     // Compute the exclusive sum of the predicate
 
@@ -163,26 +167,20 @@ void fix_image_gpu(Image& to_fix)
 
     kernel_exclusive_scan<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
 
-    std::vector<int> predicate(size, 0);
-
-    cudaMemcpyAsync(
-        predicate.data(),
-        device_predicate.data(),
-        size * sizeof(int),
-        cudaMemcpyDeviceToHost,
-        stream.get()
-    );
-
-    stream.sync();
-
     //std::exclusive_scan(predicate.begin(), predicate.end(), predicate.begin(), 0);
 
     // Scatter to the corresponding addresses
 
+    kernel_scatter<<<nb_block, block_size, 0, stream.get()>>>(buffer, device_predicate);
+
+    cudaMemcpyAsync(to_fix.buffer, buffer.data(), size * sizeof(int), cudaMemcpyDeviceToHost, stream.get());
+
+    stream.sync();
+    /*
     for (std::size_t i = 0; i < predicate.size(); ++i)
         if (to_fix.buffer[i] != GARBAGE_VALUE)
             to_fix.buffer[predicate[i]] = to_fix.buffer[i];
-
+    */
 
     // #2 Apply map to fix pixels
 
