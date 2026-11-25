@@ -154,9 +154,19 @@ void kernel_inclusive_scan(cuda::std::span<int> buffer, int* first_index)
 
     if (id < buffer.size() && buffer[id] != 0) {
         if (id == 0 || buffer[id - 1] == 0) {
-            *first_index = id;
+            *first_index = buffer[id];
         }
     }
+}
+
+__global__
+void kernel_equalization(cuda::std::span<int> buffer, cuda::std::span<int> cdf, int* min_cdf, int image_size) {
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (id >= image_size)
+        return;
+
+    buffer[id] = std::roundf(((cdf[buffer[id]] - *min_cdf) / static_cast<float>(image_size - *min_cdf)) * 255.f);
 }
 
 
@@ -254,15 +264,6 @@ void fix_image_gpu(Image& to_fix)
 
     kernel_fix_map<<<img_nb_block, block_size, 0, stream.get()>>>(buffer, image_size);
 
-    // Enlever une fois cuda histo implemente
-    cudaMemcpyAsync(
-        to_fix.buffer, 
-        buffer.data(), 
-        size * sizeof(int), 
-        cudaMemcpyDeviceToHost, 
-        stream.get()
-    );
-
     /*
     for (int i = 0; i < image_size; ++i)
     {
@@ -297,7 +298,7 @@ void fix_image_gpu(Image& to_fix)
 
     kernel_histogram<<<img_nb_block, block_size, block_size * sizeof(int), stream.get()>>>(buffer, histogram, image_size);
 
-    std::array<int, 256> histo;
+    //std::array<int, 256> histo;
 
     /*
     std::array<int, 256> histo;
@@ -315,33 +316,12 @@ void fix_image_gpu(Image& to_fix)
         cuda::no_init
     );
 
-    kernel_inclusive_scan<<<1, HISTOGRAM_SIZE, 0, stream.get()>>>(histogram, cdf_min_device.data());
-
-    cudaMemcpyAsync(
-        histo.data(),
-        histogram.data(),
-        HISTOGRAM_SIZE * sizeof(int),
-        cudaMemcpyDeviceToHost,
-        stream.get()
-    );
-
-    
+    kernel_inclusive_scan<<<1, HISTOGRAM_SIZE, 0, stream.get()>>>(histogram, cdf_min_device.data());  
 
     //std::inclusive_scan(histo.begin(), histo.end(), histo.begin());
 
     // Find the first non-zero value in the cumulative histogram
 
-    int cdf_min;
-
-    cudaMemcpyAsync(
-        &cdf_min,
-        cdf_min_device.data(),
-        sizeof(int),
-        cudaMemcpyDeviceToHost,
-        stream.get()
-    );
-
-    stream.sync();
     /*
     auto first_none_zero = std::find_if(histo.begin(), histo.end(), [](auto v) { return v != 0; });
 
@@ -350,12 +330,26 @@ void fix_image_gpu(Image& to_fix)
 
     // Apply the map transformation of the histogram equalization
 
+    kernel_equalization<<<img_nb_block, block_size, 0, stream.get()>>>(buffer, histogram, cdf_min_device.data(), image_size);
+
+    cudaMemcpyAsync(
+        to_fix.buffer, 
+        buffer.data(), 
+        size * sizeof(int), 
+        cudaMemcpyDeviceToHost, 
+        stream.get()
+    );
+
+    stream.sync();
+
+    /*
     std::transform(to_fix.buffer, to_fix.buffer + image_size, to_fix.buffer,
         [image_size, cdf_min, &histo](int pixel)
             {
                 return std::roundf(((histo[pixel] - cdf_min) / static_cast<float>(image_size - cdf_min)) * 255.0f);
             }
     );
+    */
 }
 
 __global__
