@@ -135,6 +135,31 @@ void kernel_histogram(cuda::std::span<int> buffer, cuda::std::span<int> histogra
     }
 }
 
+__global__
+void kernel_inclusive_scan(cuda::std::span<int> buffer, int* first_index)
+{
+    int tid = threadIdx.x;
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    for (int s = 1; s < blockDim.x; s *= 2) {
+
+        int tmp = id < buffer.size() ? buffer[id] : 0;
+        __syncthreads();
+
+        if (tid + s < blockDim.x && id + s < buffer.size()) {
+            buffer[id + s] += tmp;
+        }
+        __syncthreads();
+    }
+
+    if (id < buffer.size() && buffer[id] != 0) {
+        if (id == 0 || buffer[id - 1] == 0) {
+            *first_index = id;
+        }
+    }
+}
+
+
 void fix_image_gpu(Image& to_fix)
 {
     const int image_size = to_fix.width * to_fix.height;
@@ -274,16 +299,6 @@ void fix_image_gpu(Image& to_fix)
 
     std::array<int, 256> histo;
 
-    cudaMemcpyAsync(
-        histo.data(),
-        histogram.data(),
-        HISTOGRAM_SIZE * sizeof(int),
-        cudaMemcpyDeviceToHost,
-        stream.get()
-    );
-
-    stream.sync();
-
     /*
     std::array<int, 256> histo;
     histo.fill(0);
@@ -293,13 +308,45 @@ void fix_image_gpu(Image& to_fix)
 
     // Compute the inclusive sum scan of the histogram
 
-    std::inclusive_scan(histo.begin(), histo.end(), histo.begin());
+    cuda::device_buffer<int> cdf_min_device(
+        stream,
+        mr,
+        1,
+        cuda::no_init
+    );
+
+    kernel_inclusive_scan<<<1, HISTOGRAM_SIZE, 0, stream.get()>>>(histogram, cdf_min_device.data());
+
+    cudaMemcpyAsync(
+        histo.data(),
+        histogram.data(),
+        HISTOGRAM_SIZE * sizeof(int),
+        cudaMemcpyDeviceToHost,
+        stream.get()
+    );
+
+    
+
+    //std::inclusive_scan(histo.begin(), histo.end(), histo.begin());
 
     // Find the first non-zero value in the cumulative histogram
 
+    int cdf_min;
+
+    cudaMemcpyAsync(
+        &cdf_min,
+        cdf_min_device.data(),
+        sizeof(int),
+        cudaMemcpyDeviceToHost,
+        stream.get()
+    );
+
+    stream.sync();
+    /*
     auto first_none_zero = std::find_if(histo.begin(), histo.end(), [](auto v) { return v != 0; });
 
     const int cdf_min = *first_none_zero;
+    */
 
     // Apply the map transformation of the histogram equalization
 
