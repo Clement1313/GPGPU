@@ -8,6 +8,7 @@
 #include <thrust/copy.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/transform.h>
+#include <thrust/device.h>
 #include <cub/cub.cuh>
 
 struct is_not_garbage {
@@ -70,10 +71,17 @@ void fix_image_industrial(Image& to_fix) {
 
     cub::DeviceHistogram::HistogramEven(temp_storage, temp_storage_bytes, in_ptr, out_ptr, 257, 0, 256, num_items);
 
-    // // Compute the inclusive sum scan of the histogram
+    
+    // Compute the inclusive sum scan of the histogram
+    void* temp_storage = nullptr;
+    size_t temp_storage_bytes = 0;
+    cub::DeviceScan::inclusive_scan(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
 
-    // std::inclusive_scan(histo.begin(), histo.end(), histo.begin());
-
+    thrust::device_vector<char> temp_buffer(temp_storage_bytes);
+    temp_storage = thrust::raw_pointer_cast(temp_buffer.data());
+    cub::DeviceScan::inclusive_scan(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
+    
+    
     // // Find the first non-zero value in the cumulative histogram
 
     // auto first_none_zero = std::find_if(histo.begin(), histo.end(), [](auto v) { return v != 0; });
