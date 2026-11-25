@@ -11,6 +11,7 @@
 #include <cuda/atomic>
 
 constexpr int GARBAGE_VALUE = -27;
+constexpr int HISTOGRAM_SIZE = 256;
 
 __global__
 void kernel_predicate(cuda::std::span<int> buffer, cuda::std::span<int> predicate) {
@@ -110,6 +111,30 @@ void kernel_fix_map(cuda::std::span<int> buffer, int image_size) {
     else if (id % 4 == 3)   buffer[id] -= 8;
 }
 
+__global__
+void kernel_histogram(cuda::std::span<int> buffer, cuda::std::span<int> histogram, int size){
+    int tid = threadIdx.x;
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    extern __shared__ int local_histogram[];
+
+    for (int i = tid; i < HISTOGRAM_SIZE; i += blockDim.x) {
+        local_histogram[i] = 0;
+    }
+
+    __syncthreads();
+
+    if (id < size) {
+        cuda::atomic_ref<int, cuda::thread_scope_device>(local_histogram[buffer[id]]).fetch_add(1);
+    }
+
+    __syncthreads();
+
+    for (int i = tid; i < HISTOGRAM_SIZE; i += blockDim.x) {
+        cuda::atomic_ref<int, cuda::thread_scope_device>(histogram[i]).fetch_add(local_histogram[i]);
+    }
+}
+
 void fix_image_gpu(Image& to_fix)
 {
     const int image_size = to_fix.width * to_fix.height;
@@ -176,7 +201,13 @@ void fix_image_gpu(Image& to_fix)
 
     propagate<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
 
-    cudaMemcpyAsync(tmp.data(), device_predicate.data(), size * sizeof(int), cudaMemcpyDeviceToDevice, stream.get());
+    cudaMemcpyAsync(
+        tmp.data(), 
+        device_predicate.data(), 
+        size * sizeof(int), 
+        cudaMemcpyDeviceToDevice, 
+        stream.get()
+    );
 
     kernel_exclusive_scan<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
 
@@ -198,9 +229,14 @@ void fix_image_gpu(Image& to_fix)
 
     kernel_fix_map<<<img_nb_block, block_size, 0, stream.get()>>>(buffer, image_size);
 
-    cudaMemcpyAsync(to_fix.buffer, buffer.data(), size * sizeof(int), cudaMemcpyDeviceToHost, stream.get());
-
-    stream.sync();
+    // Enlever une fois cuda histo implemente
+    cudaMemcpyAsync(
+        to_fix.buffer, 
+        buffer.data(), 
+        size * sizeof(int), 
+        cudaMemcpyDeviceToHost, 
+        stream.get()
+    );
 
     /*
     for (int i = 0; i < image_size; ++i)
@@ -220,10 +256,40 @@ void fix_image_gpu(Image& to_fix)
 
     // Histogram
 
+    cuda::device_buffer<int> histogram (
+        stream,
+        mr,
+        HISTOGRAM_SIZE,
+        cuda::no_init
+    );
+
+    cudaMemsetAsync(
+        histogram.data(), 
+        0, 
+        HISTOGRAM_SIZE * sizeof(int), 
+        stream.get()
+    );
+
+    kernel_histogram<<<img_nb_block, block_size, block_size * sizeof(int), stream.get()>>>(buffer, histogram, image_size);
+
+    std::array<int, 256> histo;
+
+    cudaMemcpyAsync(
+        histo.data(),
+        histogram.data(),
+        HISTOGRAM_SIZE * sizeof(int),
+        cudaMemcpyDeviceToHost,
+        stream.get()
+    );
+
+    stream.sync();
+
+    /*
     std::array<int, 256> histo;
     histo.fill(0);
     for (int i = 0; i < image_size; ++i)
         ++histo[to_fix.buffer[i]];
+    */
 
     // Compute the inclusive sum scan of the histogram
 
