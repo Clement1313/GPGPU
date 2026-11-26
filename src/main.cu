@@ -14,6 +14,7 @@
 #include <cstdlib>
 
 #include <nvtx3/nvtx3.hpp>
+#include <cuda/buffer>
 
 enum class Mode { Cpu, Gpu, Industrial, Check };
 
@@ -107,6 +108,10 @@ int main(int argc, char* argv[])
     const int nb_images = pipeline.images.size();
     std::vector<Image> images(nb_images);
 
+    // -- GPU variable init
+    cuda::stream stream{cuda::device_ref(0)};
+    cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::device_ref(0));
+
     // - One CPU thread is launched for each image
 
     std::cout << "Done, starting compute" << std::endl;
@@ -134,7 +139,7 @@ int main(int argc, char* argv[])
                 break;
             case Mode::Gpu:
                 // TODO
-                fix_image_gpu(images[i]);
+                fix_image_gpu(images[i], stream, mr);
                 break;
             case Mode::Industrial:
                 // TODO
@@ -163,7 +168,7 @@ int main(int argc, char* argv[])
     // You can use multiple CPU threads for your GPU version using openmp or not
     // Up to you :)
     {
-        nvtx3::scoped_range range("compute total all images");
+        //nvtx3::scoped_range range("compute total all images");
         #pragma omp parallel for
         for (int i = 0; i < nb_images; ++i)
         {
@@ -175,7 +180,7 @@ int main(int argc, char* argv[])
                     image.to_sort.total = std::reduce(image.buffer, image.buffer + image_size, 0);
                     break;
                 case Mode::Gpu:
-                    image.to_sort.total = compute_total_gpu(image);
+                    image.to_sort.total = compute_total_gpu(image, stream, mr);
                     break;
                 case Mode::Check:
                     // TODO
