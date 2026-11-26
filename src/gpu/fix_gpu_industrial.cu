@@ -108,6 +108,10 @@ void fix_image_industrial(Image& to_fix) {
     thrust::transform(device_fixed.begin(), device_fixed.end(), device_fixed.begin(), equalize_pixel{out_ptr, cdf_min, image_size});
 
     thrust::copy(device_fixed.begin(), device_fixed.end(), to_fix.buffer);
+
+    // Compute total
+    uint64_t sum = thrust::reduce(device_fixed.begin(), device_fixed.end(), uint64_t(0));
+    to_fix.to_sort.total = sum;
 }
 
 // int  compute_total_industrial(const Image& img);
