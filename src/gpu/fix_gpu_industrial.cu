@@ -9,6 +9,7 @@
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/transform.h>
 #include <thrust/device.h>
+#include <thrust/find.h>
 #include <cub/cub.cuh>
 
 struct is_not_garbage {
@@ -30,6 +31,12 @@ struct map_pixel {
         
             return pixel;
     } 
+};
+
+struct not_zero {
+    __device__ bool operator() (int pixel) const {
+        return pixel != 0;   
+    }
 };
 
 void fix_image_industrial(Image& to_fix) {
@@ -73,23 +80,23 @@ void fix_image_industrial(Image& to_fix) {
 
     
     // Compute the inclusive sum scan of the histogram
-    void* temp_storage = nullptr;
-    size_t temp_storage_bytes = 0;
-    cub::DeviceScan::inclusive_scan(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
+    temp_storage = nullptr;
+    temp_storage_bytes = 0;
+    cub::DeviceScan::InclusiveSum(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
 
-    thrust::device_vector<char> temp_buffer(temp_storage_bytes);
-    temp_storage = thrust::raw_pointer_cast(temp_buffer.data());
-    cub::DeviceScan::inclusive_scan(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
+    thrust::device_vector<char> temp_buffer2(temp_storage_bytes);
+    temp_storage = thrust::raw_pointer_cast(temp_buffer2.data());
+    cub::DeviceScan::InclusiveSum(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
     
     
-    // // Find the first non-zero value in the cumulative histogram
-
-    // auto first_none_zero = std::find_if(histo.begin(), histo.end(), [](auto v) { return v != 0; });
-
-    // const int cdf_min = *first_none_zero;
-
-    // // Apply the map transformation of the histogram equalization
+    // Find the first non-zero value in the cumulative histogram
+    auto first_none_zero = thrust::find_if(histogram.begin(), histogram.end(), not_zero());
     
+    const int cdf_min = *first_none_zero;
+
+    // Apply the map transformation of the histogram equalization
+    
+    cub::DeviceReduce::Sum()
     // std::transform(to_fix.buffer, to_fix.buffer + image_size, to_fix.buffer,
     //     [image_size, cdf_min, &histo](int pixel)
     //         {
@@ -99,7 +106,7 @@ void fix_image_industrial(Image& to_fix) {
 
 
 
-    thrus::.copy(device_fixed.begin(), device_fixed.end(), to_fix.buffer);
+    thrust::copy(device_fixed.begin(), device_fixed.end(), to_fix.buffer);
 }
 
 // int  compute_total_industrial(const Image& img);
