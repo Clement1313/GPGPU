@@ -94,6 +94,8 @@ void kernel_scatter(cuda::std::span<int> buffer, cuda::std::span<int> excl_predi
 
     int val = buffer[id];
 
+    __syncthreads();
+
     if (val != GARBAGE_VALUE)
         buffer[excl_predicate[id]] = val;
 }
@@ -166,7 +168,10 @@ void kernel_equalization(cuda::std::span<int> buffer, cuda::std::span<int> cdf, 
     if (id >= image_size)
         return;
 
-    buffer[id] = std::roundf(((cdf[buffer[id]] - *min_cdf) / static_cast<float>(image_size - *min_cdf)) * 255.f);
+    int* ptr = buffer.data();
+    int pixel = buffer[id];
+
+    buffer[id] = std::roundf(((cdf[pixel] - *min_cdf) / static_cast<float>(image_size - *min_cdf)) * 255.f);
 }
 
 

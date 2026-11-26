@@ -122,10 +122,11 @@ cmake ..
 make -j
 ```
 
-* By default the program **will run in release**. To build in **debug**, do:
+* With Makefiles or Ninja, the default build type is **Release**. To build in **Debug** with CUDA device debugging enabled, use a separate build directory. Run these commands from the project root.
 
 ```bash
-cmake -DCMAKE\_BUILD\_TYPE=Debug ..
+cmake -S . -B build/cuda-debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/cuda-debug -j
 ```
 
 ### Run :

@@ -112,6 +112,16 @@ int main(int argc, char* argv[])
     cuda::stream stream{cuda::device_ref(0)};
     cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::device_ref(0));
 
+    if (mode == Mode::Gpu)
+    {
+        nvtx3::scoped_range range("GPU memory pool warmup");
+        {
+            const auto size = pipeline.images.front().size();
+            cuda::device_buffer<int> warmup_buffer(stream, mr, size, cuda::no_init);
+        }
+        stream.sync();
+    }
+
     // - One CPU thread is launched for each image
 
     std::cout << "Done, starting compute" << std::endl;
