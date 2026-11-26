@@ -8,7 +8,7 @@
 #include <thrust/copy.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/transform.h>
-#include <thrust/device.h>
+#include <thrust/distance.h>
 #include <thrust/find.h>
 #include <cub/cub.cuh>
 
@@ -39,6 +39,16 @@ struct not_zero {
     }
 };
 
+struct equalize_pixel {
+    const int* histo;
+    int cdf_min;
+    int image_size;
+
+    __device__ int operator() (int pixel) const {
+        return roundf((histo[pixel] - cdf_min) / static_cast<float>(image_size - cdf_min) * 255.f);
+    }
+};
+
 void fix_image_industrial(Image& to_fix) {
 
     // #1 Compact
@@ -52,7 +62,7 @@ void fix_image_industrial(Image& to_fix) {
         is_not_garbage()
     );
 
-    int compact_size = thrust::distance(device_fixed.begin(), end_it);
+    int compact_size = end_it - device_fixed.begin();
     device_fixed.resize(compact_size);
 
     assert(compact_size == image_size);
@@ -95,16 +105,7 @@ void fix_image_industrial(Image& to_fix) {
     const int cdf_min = *first_none_zero;
 
     // Apply the map transformation of the histogram equalization
-    
-    cub::DeviceReduce::Sum()
-    // std::transform(to_fix.buffer, to_fix.buffer + image_size, to_fix.buffer,
-    //     [image_size, cdf_min, &histo](int pixel)
-    //         {
-    //             return std::roundf(((histo[pixel] - cdf_min) / static_cast<float>(image_size - cdf_min)) * 255.0f);
-    //         }
-    // );
-
-
+    thrust::transform(device_fixed.begin(), device_fixed.end(), device_fixed.begin(), equalize_pixel{out_ptr, cdf_min, image_size});
 
     thrust::copy(device_fixed.begin(), device_fixed.end(), to_fix.buffer);
 }

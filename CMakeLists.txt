@@ -33,10 +33,12 @@ set(CMAKE_CUDA_ARCHITECTURES "native")
 include_directories(src)
 include_directories(src/gpu)
 
-add_executable(main src/main.cu src/fix_cpu.cu src/gpu/fix_gpu.cu)
+add_executable(main src/main.cu src/fix_cpu.cu src/gpu/fix_gpu.cu src/gpu/fix_gpu_industrial.cu)
 
 target_compile_options(main PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${OpenMP_CXX_FLAGS}>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Debug>>:-G>)
 
+add_executable(main src/main.cu src/fix_cpu.cu src/gpu/fix_gpu.cu src/gpu/fix_gpu_industrial.cu)
+target_compile_options(main PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${OpenMP_CXX_FLAGS}>)
 target_link_libraries(main PRIVATE OpenMP::OpenMP_CXX CCCL::CCCL nvtx3-cpp)
