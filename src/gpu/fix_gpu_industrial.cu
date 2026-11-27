@@ -53,8 +53,10 @@ void fix_image_industrial(Image& to_fix) {
 
     // #1 Compact
     const int image_size = to_fix.width * to_fix.height;
-    thrust::device_vector<int> device_to_fix(to_fix.buffer, to_fix.buffer + to_fix.size());
-    thrust::device_vector<int> device_fixed(to_fix.size());
+    static thread_local thrust::device_vector<int> device_to_fix;
+    static thread_local thrust::device_vector<int> device_fixed;
+    device_to_fix.assign(to_fix.buffer, to_fix.buffer + to_fix.size());
+    device_fixed.resize(to_fix.size());
 
     auto end_it = thrust::copy_if(
         device_to_fix.begin(), device_to_fix.end(),
@@ -77,13 +79,14 @@ void fix_image_industrial(Image& to_fix) {
     // Histogram
     const int* in_ptr = thrust::raw_pointer_cast(device_fixed.data());
     int num_items = device_fixed.size();
-    thrust::device_vector<int> histogram(256);
+    static thread_local thrust::device_vector<int> histogram(256);
     int* out_ptr = thrust::raw_pointer_cast(histogram.data());
 
     void* temp_storage = nullptr;
     size_t temp_storage_bytes = 0;
     cub::DeviceHistogram::HistogramEven(temp_storage, temp_storage_bytes, in_ptr, out_ptr, 257, 0, 256, num_items);
-    thrust::device_vector<char> temp_buffer(temp_storage_bytes);
+    static thread_local thrust::device_vector<char> temp_buffer;
+    temp_buffer.resize(temp_storage_bytes);
     temp_storage = thrust::raw_pointer_cast(temp_buffer.data());
 
     cub::DeviceHistogram::HistogramEven(temp_storage, temp_storage_bytes, in_ptr, out_ptr, 257, 0, 256, num_items);
@@ -94,7 +97,8 @@ void fix_image_industrial(Image& to_fix) {
     temp_storage_bytes = 0;
     cub::DeviceScan::InclusiveSum(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
 
-    thrust::device_vector<char> temp_buffer2(temp_storage_bytes);
+    static thread_local thrust::device_vector<char> temp_buffer2;
+    temp_buffer2.resize(temp_storage_bytes);
     temp_storage = thrust::raw_pointer_cast(temp_buffer2.data());
     cub::DeviceScan::InclusiveSum(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
     
