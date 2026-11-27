@@ -86,16 +86,14 @@ void kernel_exclusive_scan(cuda::std::span<int> buffer, cuda::std::span<int> tmp
 }
 
 __global__
-void kernel_scatter(cuda::std::span<int> buffer, cuda::std::span<int> excl_predicate) {
+void kernel_scatter(cuda::std::span<int> buffer, cuda::std::span<int> out, cuda::std::span<int> excl_predicate) {
     int id = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (id >= buffer.size())
         return;
 
-    int val = buffer[id];
-
-    if (val != GARBAGE_VALUE)
-        buffer[excl_predicate[id]] = val;
+    if (buffer[id] != GARBAGE_VALUE)
+        out[excl_predicate[id]] = buffer[id];
 }
 
 __global__
@@ -166,20 +164,22 @@ void kernel_equalization(cuda::std::span<int> buffer, cuda::std::span<int> cdf, 
     if (id >= image_size)
         return;
 
-    buffer[id] = std::roundf(((cdf[buffer[id]] - *min_cdf) / static_cast<float>(image_size - *min_cdf)) * 255.f);
+    int* ptr = buffer.data();
+    int pixel = buffer[id];
+
+    buffer[id] = std::roundf(((cdf[pixel] - *min_cdf) / static_cast<float>(image_size - *min_cdf)) * 255.f);
 }
 
 
-void fix_image_gpu(Image& to_fix)
+void fix_image_gpu(Image& to_fix, cuda::stream& stream, cuda::device_memory_pool_ref& mr)
 {
+    nvtx3::scoped_range range("image fix");
+
     const int image_size = to_fix.width * to_fix.height;
 
     // CUDA
 
     const int size = to_fix.size();
-
-    cuda::stream stream{cuda::device_ref(0)};
-    cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::device_ref(0));
 
     int block_size = 1024;
     int nb_block = cuda::ceil_div(size, block_size);
@@ -188,6 +188,8 @@ void fix_image_gpu(Image& to_fix)
     // #1 Compact
 
     // Build predicate vector
+
+    nvtxRangePushA("init variable");
 
     cuda::device_buffer<int> buffer(
         stream,
@@ -211,17 +213,18 @@ void fix_image_gpu(Image& to_fix)
         cuda::no_init
     );
 
+    stream.sync();
+    nvtxRangePop();
+
+    nvtxRangePushA("predicate kernel");
+
     kernel_predicate<<<nb_block, block_size, 0, stream.get()>>>(buffer, device_predicate);
 
-    /*
-    std::vector<int> predicate(to_fix.size(), 0);
-
-    for (int i = 0; i < to_fix.size(); ++i)
-        if (to_fix.buffer[i] != GARBAGE_VALUE)
-            predicate[i] = 1;
-    */
+    nvtxRangePop();
 
     // Compute the exclusive sum of the predicate
+
+    nvtxRangePushA("scan kernel");
 
     cuda::device_buffer<int> tmp(
         stream,
@@ -236,6 +239,10 @@ void fix_image_gpu(Image& to_fix)
 
     propagate<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
 
+    nvtxRangePop();
+
+    nvtxRangePushA("exclusive scan kernel");
+
     cudaMemcpyAsync(
         tmp.data(), 
         device_predicate.data(), 
@@ -246,41 +253,38 @@ void fix_image_gpu(Image& to_fix)
 
     kernel_exclusive_scan<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
 
-    //std::exclusive_scan(predicate.begin(), predicate.end(), predicate.begin(), 0);
+    nvtxRangePop();
 
     // Scatter to the corresponding addresses
 
-    kernel_scatter<<<nb_block, block_size, 0, stream.get()>>>(buffer, device_predicate);
+    nvtxRangePushA("scatter kernel");
 
-    /*
-    for (std::size_t i = 0; i < predicate.size(); ++i)
-        if (to_fix.buffer[i] != GARBAGE_VALUE)
-            to_fix.buffer[predicate[i]] = to_fix.buffer[i];
-    */
+    cuda::device_buffer<int> fix_buffer(
+        stream,
+        mr,
+        size,
+        cuda::no_init
+    );
 
+    kernel_scatter<<<nb_block, block_size, 0, stream.get()>>>(buffer, fix_buffer,device_predicate);
+
+    nvtxRangePop();
     // #2 Apply map to fix pixels
     
     int img_nb_block = cuda::ceil_div(image_size, block_size);
 
-    kernel_fix_map<<<img_nb_block, block_size, 0, stream.get()>>>(buffer, image_size);
+    nvtxRangePushA("fix map kernel");
 
-    /*
-    for (int i = 0; i < image_size; ++i)
-    {
-        if (i % 4 == 0)
-            to_fix.buffer[i] += 1;
-        else if (i % 4 == 1)
-            to_fix.buffer[i] -= 5;
-        else if (i % 4 == 2)
-            to_fix.buffer[i] += 3;
-        else if (i % 4 == 3)
-            to_fix.buffer[i] -= 8;
-    }
-    */
+    kernel_fix_map<<<img_nb_block, block_size, 0, stream.get()>>>(fix_buffer, image_size);
+
+    nvtxRangePop();
 
     // #3 Histogram equalization
 
     // Histogram
+    nvtxRangePushA("histogram kernels");
+
+    nvtxRangePushA("histogram kernel");
 
     cuda::device_buffer<int> histogram (
         stream,
@@ -296,18 +300,14 @@ void fix_image_gpu(Image& to_fix)
         stream.get()
     );
 
-    kernel_histogram<<<img_nb_block, block_size, block_size * sizeof(int), stream.get()>>>(buffer, histogram, image_size);
+    kernel_histogram<<<img_nb_block, block_size, block_size * sizeof(int), stream.get()>>>(fix_buffer, histogram, image_size);
 
-    //std::array<int, 256> histo;
-
-    /*
-    std::array<int, 256> histo;
-    histo.fill(0);
-    for (int i = 0; i < image_size; ++i)
-        ++histo[to_fix.buffer[i]];
-    */
+    nvtxRangePop();
 
     // Compute the inclusive sum scan of the histogram
+    // Find the first non-zero value in the cumulative histogram
+
+    nvtxRangePushA("inclusive scan kernel");
 
     cuda::device_buffer<int> cdf_min_device(
         stream,
@@ -318,38 +318,26 @@ void fix_image_gpu(Image& to_fix)
 
     kernel_inclusive_scan<<<1, HISTOGRAM_SIZE, 0, stream.get()>>>(histogram, cdf_min_device.data());  
 
-    //std::inclusive_scan(histo.begin(), histo.end(), histo.begin());
-
-    // Find the first non-zero value in the cumulative histogram
-
-    /*
-    auto first_none_zero = std::find_if(histo.begin(), histo.end(), [](auto v) { return v != 0; });
-
-    const int cdf_min = *first_none_zero;
-    */
+    nvtxRangePop();
 
     // Apply the map transformation of the histogram equalization
+    nvtxRangePushA("equalization kernel");
 
-    kernel_equalization<<<img_nb_block, block_size, 0, stream.get()>>>(buffer, histogram, cdf_min_device.data(), image_size);
+    kernel_equalization<<<img_nb_block, block_size, 0, stream.get()>>>(fix_buffer, histogram, cdf_min_device.data(), image_size);
+
+    nvtxRangePop();
+
+    nvtxRangePop();
 
     cudaMemcpyAsync(
         to_fix.buffer, 
-        buffer.data(), 
+        fix_buffer.data(), 
         size * sizeof(int), 
         cudaMemcpyDeviceToHost, 
         stream.get()
     );
 
     stream.sync();
-
-    /*
-    std::transform(to_fix.buffer, to_fix.buffer + image_size, to_fix.buffer,
-        [image_size, cdf_min, &histo](int pixel)
-            {
-                return std::roundf(((histo[pixel] - cdf_min) / static_cast<float>(image_size - cdf_min)) * 255.0f);
-            }
-    );
-    */
 }
 
 __global__
@@ -377,14 +365,13 @@ void kernel_reduce(cuda::std::span<int> buffer, cuda::std::span<int> odata) {
     if (tid == 0) odata[blockIdx.x] = data[0];
 }
 
-int compute_total_gpu(const Image& img) {
+int compute_total_gpu(const Image& img, cuda::stream& stream, cuda::device_memory_pool_ref& mr) {
 
-    nvtx3::scoped_range range("My Reduce");
-
-    cuda::stream stream{cuda::device_ref(0)};
-    cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::device_ref(0));
+    nvtx3::scoped_range range("image reduce");
 
     int size = img.width * img.height;;
+
+    nvtxRangePushA("variable init");
 
     cuda::device_buffer<int> input(
         stream,
@@ -416,12 +403,23 @@ int compute_total_gpu(const Image& img) {
 
     cuda::std::span<int> tmp_span = cuda::std::span(tmp.data(), nb_block);
 
-    kernel_reduce<<<nb_block, block_size, block_size * sizeof(int), stream.get()>>>(input_span, tmp_span);
-    
     int nb_block_reduce = cuda::ceil_div(nb_block, block_size);
+    int result;
+
+    nvtxRangePop();
+
+    nvtxRangePushA("reduce kernel block level");
+
+    kernel_reduce<<<nb_block, block_size, block_size * sizeof(int), stream.get()>>>(input_span, tmp_span);
+
+    nvtxRangePop();
+    nvtxRangePushA("reduce kernel grid level");
+    
     kernel_reduce<<<nb_block_reduce, block_size, block_size * sizeof(int), stream.get()>>>(tmp_span, tmp_span);
 
-    int result;
+    nvtxRangePop();
+
+    nvtxRangePushA("copy res device to host");
 
     cudaMemcpyAsync(
         &result,
@@ -430,6 +428,8 @@ int compute_total_gpu(const Image& img) {
         cudaMemcpyDeviceToHost,
         stream.get()
     );
+
+    nvtxRangePop();
 
     stream.sync();
 

@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.26.4 FATAL_ERROR)
 project(project_irgpua LANGUAGES CXX CUDA)
 
+get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT is_multi_config AND "${CMAKE_BUILD_TYPE}" STREQUAL "")
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 find_package(CUDAToolkit REQUIRED)
 
 find_package(OpenMP REQUIRED)

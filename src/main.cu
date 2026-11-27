@@ -6,7 +6,6 @@
 #include <vector>
 #include <iostream>
 #include <algorithm>
-#include <sstream>
 #include <filesystem>
 #include <numeric>
 #include <string>
@@ -15,6 +14,7 @@
 #include <chrono>
 
 #include <nvtx3/nvtx3.hpp>
+#include <cuda/buffer>
 
 enum class Mode { Cpu, Gpu, Industrial, Check };
 
@@ -117,6 +117,20 @@ int main(int argc, char* argv[])
     const int nb_images = pipeline.images.size();
     std::vector<Image> images(nb_images);
 
+    // -- GPU variable init
+    cuda::stream stream{cuda::device_ref(0)};
+    cuda::device_memory_pool_ref mr = cuda::device_default_memory_pool(cuda::device_ref(0));
+
+    if (mode == Mode::Gpu)
+    {
+        nvtx3::scoped_range range("GPU memory pool warmup");
+        {
+            const auto size = pipeline.images.front().size();
+            cuda::device_buffer<int> warmup_buffer(stream, mr, size, cuda::no_init);
+        }
+        stream.sync();
+    }
+
     // - One CPU thread is launched for each image
 
     std::cout << "Done, starting compute" << std::endl;
@@ -146,7 +160,7 @@ int main(int argc, char* argv[])
                 break;
             case Mode::Gpu:
                 // TODO
-                fix_image_gpu(images[i]);
+                fix_image_gpu(images[i], stream, mr);
                 break;
             case Mode::Industrial:
                 // TODO
@@ -175,7 +189,7 @@ int main(int argc, char* argv[])
     // You can use multiple CPU threads for your GPU version using openmp or not
     // Up to you :)
     {
-        nvtx3::scoped_range range("compute total all images");
+        //nvtx3::scoped_range range("compute total all images");
         #pragma omp parallel for
         for (int i = 0; i < nb_images; ++i)
         {
@@ -187,7 +201,7 @@ int main(int argc, char* argv[])
                     image.to_sort.total = std::reduce(image.buffer, image.buffer + image_size, 0);
                     break;
                 case Mode::Gpu:
-                    image.to_sort.total = compute_total_gpu(image);
+                    image.to_sort.total = compute_total_gpu(image, stream, mr);
                     break;
                 case Mode::Check:
                     // TODO
@@ -211,22 +225,13 @@ int main(int argc, char* argv[])
                   << " ms, average per image : " << total_ms / nb_images << " ms" << std::endl;
     }
     
-    // - All totals are known, sort images accordingly (OPTIONAL)
-    // Moving the actual images is too expensive, sort image indices instead
-    // Copying to an id array and sort it instead
-
-    // TODO OPTIONAL : for you GPU version you can store it the way you want
-    // But just like the CPU version, moving the actual images while sorting will be too slow
-    using ToSort = Image::ToSort;
-    std::vector<ToSort> to_sort(nb_images);
-    std::generate(to_sort.begin(), to_sort.end(), [n = 0, &images] () mutable
-    {
-        return images[n++].to_sort;
-    });
+    // Sort vector positions by total. File IDs are used for output.
+    std::vector<std::size_t> sorted_indices(images.size());
+    std::iota(sorted_indices.begin(), sorted_indices.end(), std::size_t{0});
 
     // TODO OPTIONAL : make it GPU compatible (aka faster)
-    std::sort(to_sort.begin(), to_sort.end(), [](ToSort a, ToSort b) {
-        return a.total < b.total;
+    std::sort(sorted_indices.begin(), sorted_indices.end(), [&images](std::size_t a, std::size_t b) {
+        return images[a].to_sort.total < images[b].to_sort.total;
     });
 
     // TODO : Test here that you have the same results
@@ -258,13 +263,12 @@ int main(int argc, char* argv[])
             free(refs[i].buffer);
     }
 
-    for (const auto& id_sorted : to_sort)
+    for (const auto index : sorted_indices)
     {
-        std::cout << "Image #" << images[id_sorted.id].to_sort.id << " total : " << images[id_sorted.id].to_sort.total << std::endl;
-        std::ostringstream oss;
-        oss << "Image#" << images[id_sorted.id].to_sort.id << ".pgm";
-        std::string str = oss.str();
-        images[id_sorted.id].write(str);
+        const auto& image = images[index];
+        const auto id = image.to_sort.id;
+        std::cout << "Image #" << id << " total : " << image.to_sort.total << std::endl;
+        image.write("Image#" + std::to_string(id) + ".pgm");
     }
 
     std::cout << "Done, the internet is safe now :)" << std::endl;
