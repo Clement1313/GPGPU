@@ -6,7 +6,6 @@
 #include <vector>
 #include <iostream>
 #include <algorithm>
-#include <sstream>
 #include <filesystem>
 #include <numeric>
 #include <string>
@@ -204,22 +203,13 @@ int main(int argc, char* argv[])
         }
     }
     
-    // - All totals are known, sort images accordingly (OPTIONAL)
-    // Moving the actual images is too expensive, sort image indices instead
-    // Copying to an id array and sort it instead
-
-    // TODO OPTIONAL : for you GPU version you can store it the way you want
-    // But just like the CPU version, moving the actual images while sorting will be too slow
-    using ToSort = Image::ToSort;
-    std::vector<ToSort> to_sort(nb_images);
-    std::generate(to_sort.begin(), to_sort.end(), [n = 0, &images] () mutable
-    {
-        return images[n++].to_sort;
-    });
+    // Sort vector positions by total. File IDs are used for output.
+    std::vector<std::size_t> sorted_indices(images.size());
+    std::iota(sorted_indices.begin(), sorted_indices.end(), std::size_t{0});
 
     // TODO OPTIONAL : make it GPU compatible (aka faster)
-    std::sort(to_sort.begin(), to_sort.end(), [](ToSort a, ToSort b) {
-        return a.total < b.total;
+    std::sort(sorted_indices.begin(), sorted_indices.end(), [&images](std::size_t a, std::size_t b) {
+        return images[a].to_sort.total < images[b].to_sort.total;
     });
 
     // TODO : Test here that you have the same results
@@ -251,13 +241,12 @@ int main(int argc, char* argv[])
             free(refs[i].buffer);
     }
 
-    for (const auto& id_sorted : to_sort)
+    for (const auto index : sorted_indices)
     {
-        std::cout << "Image #" << images[id_sorted.id].to_sort.id << " total : " << images[id_sorted.id].to_sort.total << std::endl;
-        std::ostringstream oss;
-        oss << "Image#" << images[id_sorted.id].to_sort.id << ".pgm";
-        std::string str = oss.str();
-        images[id_sorted.id].write(str);
+        const auto& image = images[index];
+        const auto id = image.to_sort.id;
+        std::cout << "Image #" << id << " total : " << image.to_sort.total << std::endl;
+        image.write("Image#" + std::to_string(id) + ".pgm");
     }
 
     std::cout << "Done, the internet is safe now :)" << std::endl;

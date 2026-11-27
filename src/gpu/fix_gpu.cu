@@ -86,18 +86,14 @@ void kernel_exclusive_scan(cuda::std::span<int> buffer, cuda::std::span<int> tmp
 }
 
 __global__
-void kernel_scatter(cuda::std::span<int> buffer, cuda::std::span<int> excl_predicate) {
+void kernel_scatter(cuda::std::span<int> buffer, cuda::std::span<int> out, cuda::std::span<int> excl_predicate) {
     int id = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (id >= buffer.size())
         return;
 
-    int val = buffer[id];
-
-    __syncthreads();
-
-    if (val != GARBAGE_VALUE)
-        buffer[excl_predicate[id]] = val;
+    if (buffer[id] != GARBAGE_VALUE)
+        out[excl_predicate[id]] = buffer[id];
 }
 
 __global__
@@ -263,7 +259,14 @@ void fix_image_gpu(Image& to_fix, cuda::stream& stream, cuda::device_memory_pool
 
     nvtxRangePushA("scatter kernel");
 
-    kernel_scatter<<<nb_block, block_size, 0, stream.get()>>>(buffer, device_predicate);
+    cuda::device_buffer<int> fix_buffer(
+        stream,
+        mr,
+        size,
+        cuda::no_init
+    );
+
+    kernel_scatter<<<nb_block, block_size, 0, stream.get()>>>(buffer, fix_buffer,device_predicate);
 
     nvtxRangePop();
     // #2 Apply map to fix pixels
@@ -272,7 +275,7 @@ void fix_image_gpu(Image& to_fix, cuda::stream& stream, cuda::device_memory_pool
 
     nvtxRangePushA("fix map kernel");
 
-    kernel_fix_map<<<img_nb_block, block_size, 0, stream.get()>>>(buffer, image_size);
+    kernel_fix_map<<<img_nb_block, block_size, 0, stream.get()>>>(fix_buffer, image_size);
 
     nvtxRangePop();
 
@@ -297,7 +300,7 @@ void fix_image_gpu(Image& to_fix, cuda::stream& stream, cuda::device_memory_pool
         stream.get()
     );
 
-    kernel_histogram<<<img_nb_block, block_size, block_size * sizeof(int), stream.get()>>>(buffer, histogram, image_size);
+    kernel_histogram<<<img_nb_block, block_size, block_size * sizeof(int), stream.get()>>>(fix_buffer, histogram, image_size);
 
     nvtxRangePop();
 
@@ -320,7 +323,7 @@ void fix_image_gpu(Image& to_fix, cuda::stream& stream, cuda::device_memory_pool
     // Apply the map transformation of the histogram equalization
     nvtxRangePushA("equalization kernel");
 
-    kernel_equalization<<<img_nb_block, block_size, 0, stream.get()>>>(buffer, histogram, cdf_min_device.data(), image_size);
+    kernel_equalization<<<img_nb_block, block_size, 0, stream.get()>>>(fix_buffer, histogram, cdf_min_device.data(), image_size);
 
     nvtxRangePop();
 
@@ -328,7 +331,7 @@ void fix_image_gpu(Image& to_fix, cuda::stream& stream, cuda::device_memory_pool
 
     cudaMemcpyAsync(
         to_fix.buffer, 
-        buffer.data(), 
+        fix_buffer.data(), 
         size * sizeof(int), 
         cudaMemcpyDeviceToHost, 
         stream.get()
