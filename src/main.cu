@@ -2,6 +2,7 @@
 #include "pipeline.hh"
 #include "fix_cpu.cuh"
 #include "gpu/fix_gpu.cuh"
+#include "gpu/fix_gpu_industrial.cuh"
 
 #include <vector>
 #include <iostream>
@@ -15,7 +16,7 @@
 
 #include <nvtx3/nvtx3.hpp>
 
-enum class Mode { Cpu, Gpu, Industrial, Check };
+enum class Mode { Cpu, Gpu, Industrial, Check, CheckIndustrial };
 
 static Mode parse_mode(int argc, char* argv[])
 {
@@ -25,9 +26,10 @@ static Mode parse_mode(int argc, char* argv[])
             const std::string m = argv[i + 1];
             if (m == "cpu")   return Mode::Cpu;
             if (m == "gpu")   return Mode::Gpu;
-            if (m == "industial")   return Mode::Industrial;
+            if (m == "industrial")   return Mode::Industrial;
             if (m == "check") return Mode::Check;
-            std::cerr << "Unknown mode: " << m << " (cpu|gpu|industial|check)" << std::endl;
+            if (m == "check-industrial") return Mode::CheckIndustrial;
+            std::cerr << "Unknown mode: " << m << " (cpu|gpu|industrial|check|check-industrial)" << std::endl;
             std::exit(1);
         }
     return Mode::Cpu;
@@ -48,7 +50,7 @@ static std::string parse_input(int argc, char* argv[])
     }
 
     std::cerr << "Usage: " << argv[0]
-              << " --input <file|directory> --mode <cpu|gpu|industial|check>\n";
+              << " --input <file|directory> --mode <cpu|gpu|industrial|check|check-industrial>\n";
     std::exit(1);
 }
 
@@ -112,7 +114,8 @@ int main(int argc, char* argv[])
     std::cout << "Done, starting compute" << std::endl;
 
     std::vector<Image> refs;
-    if (mode == Mode::Check)
+    const bool is_check = (mode == Mode::Check || mode == Mode::CheckIndustrial);
+    if (is_check)
         refs.resize(nb_images);
 
     #pragma omp parallel for
@@ -138,7 +141,7 @@ int main(int argc, char* argv[])
                 break;
             case Mode::Industrial:
                 // TODO
-                // fix_image_industial(images[i]);
+                fix_image_industrial(images[i]);
                 break;
             case Mode::Check:
             {
@@ -147,7 +150,17 @@ int main(int argc, char* argv[])
                 refs[i].buffer = static_cast<decltype(refs[i].buffer)>(std::malloc(bytes));
                 std::memcpy(refs[i].buffer, images[i].buffer, bytes);
                 fix_image_cpu(refs[i]);
-                // fix_image_gpu(images[i]);
+                fix_image_gpu(images[i]);
+                break;
+            }
+            case Mode::CheckIndustrial:
+            {
+                refs[i] = images[i];
+                const std::size_t bytes = images[i].size() * sizeof(*images[i].buffer);
+                refs[i].buffer = static_cast<decltype(refs[i].buffer)>(std::malloc(bytes));
+                std::memcpy(refs[i].buffer, images[i].buffer, bytes);
+                fix_image_cpu(refs[i]);
+                fix_image_industrial(images[i]);
                 break;
             }
         }
@@ -179,11 +192,15 @@ int main(int argc, char* argv[])
                     break;
                 case Mode::Check:
                     // TODO
-                    // image.to_sort.total = compute_total_gpu(image);
+                    image.to_sort.total = compute_total_gpu(image);
                     break;
                 case Mode::Industrial:
                     // TODO :
-                    // image.to_sort.total = compute_total_industial(image);
+                    // image.to_sort.total = compute_total_industrial(image);
+                    break;
+                case Mode::CheckIndustrial:
+                    // TODO :
+                    // image.to_sort.total = compute_total_industrial(image);
                     break;
             }
         }
@@ -210,7 +227,7 @@ int main(int argc, char* argv[])
     // TODO : Test here that you have the same results
     // You can compare visually and should compare image vectors values and "total" values
     // If you did the sorting, check that the ids are in the same order
-    if (mode == Mode::Check)
+    if (is_check)
     {
         int nb_errors = 0;
         for (int i = 0; i < nb_images; ++i)
@@ -230,7 +247,9 @@ int main(int argc, char* argv[])
                 ++nb_errors;
             }
         }
-        std::cout << (nb_errors == 0 ? "[CHECK] OK, GPU == CPU" : "[CHECK] FAILED") << std::endl;
+        const char* ok_msg = (mode == Mode::CheckIndustrial) ? "[CHECK] OK, INDUSTRIAL == CPU"
+                                                             : "[CHECK] OK, GPU == CPU";
+        std::cout << (nb_errors == 0 ? ok_msg : "[CHECK] FAILED") << std::endl;
 
         for (int i = 0; i < nb_images; ++i)
             free(refs[i].buffer);
