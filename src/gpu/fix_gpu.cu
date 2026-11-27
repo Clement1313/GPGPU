@@ -21,56 +21,102 @@ void kernel_predicate(cuda::std::span<int> buffer, cuda::std::span<int> predicat
         predicate[id] = buffer[id] != GARBAGE_VALUE;
 }
 
+enum Flag {
+    X_invalid = 0,
+    A_aggregate = 1,
+    P_prefix = 2,
+};
+
 __global__
-void kernel_scan(cuda::std::span<int> buffer, cuda::std::span<int> out)
-{
+void kernel_loop_back_scan(cuda::std::span<int> buffer, cuda::std::span<int> flags, cuda::std::span<int> sum, cuda::std::span<int> prefix, int* counter) {
     int tid = threadIdx.x;
-    int id = blockDim.x * blockIdx.x + threadIdx.x;
+    __shared__ int block_id;
+    __shared__ int block_offset;
+    
+    if (tid == 0) {
+        cuda::atomic_ref<int, cuda::thread_scope_device> counter_id(*counter);
+        block_id = counter_id.fetch_add(1);
+    }
 
-    for (int s = 1; s < blockDim.x; s *= 2) {
+    __syncthreads();
 
-        int tmp = id < buffer.size() ? buffer[id] : 0;
-        __syncthreads();
+    int id = blockDim.x * block_id + threadIdx.x;
 
-        if (tid + s < blockDim.x && id + s < buffer.size()) {
-            buffer[id + s] += tmp;
+    extern __shared__ int data[];
+
+    if (id < buffer.size())
+        data[tid] = buffer[id];
+    else
+        data[tid] = 0;
+    __syncthreads();
+    
+    for (int s = blockDim.x / 2; s > 0; s /= 2) {
+        if (tid < s) {
+            data[tid] += data[tid + s];
         }
+
         __syncthreads();
     }
 
     if (tid == 0) {
-        int last = min(blockDim.x * (blockIdx.x + 1), (int)buffer.size()) - 1;
-        out[blockIdx.x] = buffer[last];
-    } 
-}
+        sum[block_id] = data[0];
+        cuda::atomic_ref<int, cuda::thread_scope_device> flag(flags[block_id]);
 
-__global__
-void kernel_scan_aux(cuda::std::span<int> buffer)
-{
-    int tid = threadIdx.x;
-    int id = blockDim.x * blockIdx.x + threadIdx.x;
+        flag.store(Flag::A_aggregate);
+        flag.notify_all();
+
+        int agg = 0;
+        int loop_back = block_id - 1;
+        while (loop_back >= 0)
+        {
+            cuda::atomic_ref<int, cuda::thread_scope_device> loop_flag(flags[loop_back]);
+            int f = loop_flag.load();
+
+            if (f == Flag::X_invalid) {
+                loop_flag.wait(Flag::X_invalid);
+                f = loop_flag.load();
+            }
+
+            if (f == Flag::P_prefix) {
+                agg += prefix[loop_back];
+                break;
+            }
+            
+            if (f == Flag::A_aggregate) {
+                agg += sum[loop_back];
+            }
+
+            loop_back--;
+        }
+
+        block_offset = agg;
+        prefix[block_id] = data[0] + agg;
+        flag.store(Flag::P_prefix);
+        flag.notify_all();
+    }
+
+    __syncthreads();
+
+    if (id < buffer.size())    
+        data[tid] = buffer[id];
+    else                        
+        data[tid] = 0;
+
+    __syncthreads();
 
     for (int s = 1; s < blockDim.x; s *= 2) {
 
-        int tmp = id < buffer.size() ? buffer[id] : 0;
+        int tmp = data[tid];
         __syncthreads();
 
-        if (tid + s < blockDim.x && id + s < buffer.size()) {
-            buffer[id + s] += tmp;
+        if (tid + s < blockDim.x) {
+            data[tid + s] += tmp;
         }
         __syncthreads();
     }
-}
-
-__global__
-void propagate(cuda::std::span<int> buffer, cuda::std::span<int> val)
-{
-    int id = blockDim.x * blockIdx.x + threadIdx.x;
-
-    int sum = blockIdx.x != 0 ? val[blockIdx.x - 1] : 0;
 
     if (id < buffer.size())
-        buffer[id] += sum;
+        buffer[id] = data[tid] + block_offset;
 }
 
 __global__
@@ -226,22 +272,48 @@ void fix_image_gpu(Image& to_fix, cuda::stream& stream, cuda::device_memory_pool
 
     nvtxRangePushA("scan kernel");
 
+    cuda::device_buffer<int> sum(
+        stream, 
+        mr, 
+        nb_block, 
+        cuda::no_init
+    );
+
+    cuda::device_buffer<int> flags(
+        stream, 
+        mr, 
+        nb_block, 
+        cuda::no_init
+    );
+
+    cuda::device_buffer<int> prefix(
+        stream, 
+        mr, 
+        nb_block, 
+        cuda::no_init
+    );
+
+    cudaMemsetAsync(
+        flags.data(), 
+        Flag::X_invalid, 
+        nb_block * sizeof(int), 
+        stream.get()
+    );
+
+    int counter = 0;
+
+    kernel_loop_back_scan<<<nb_block, block_size, block_size * sizeof(int), buffer.stream().get()>>>(device_predicate, flags, sum, prefix, &counter);
+
+    nvtxRangePop();
+
+    nvtxRangePushA("exclusive scan kernel");
+
     cuda::device_buffer<int> tmp(
         stream,
         mr,
         size,
         cuda::no_init
     );
-
-    kernel_scan<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
-
-    kernel_scan_aux<<<cuda::ceil_div(nb_block, block_size), block_size, 0, stream.get()>>>(tmp);
-
-    propagate<<<nb_block, block_size, 0, stream.get()>>>(device_predicate, tmp);
-
-    nvtxRangePop();
-
-    nvtxRangePushA("exclusive scan kernel");
 
     cudaMemcpyAsync(
         tmp.data(), 
@@ -341,13 +413,13 @@ void fix_image_gpu(Image& to_fix, cuda::stream& stream, cuda::device_memory_pool
 }
 
 __global__
-void kernel_reduce(cuda::std::span<int> buffer, cuda::std::span<int> odata) {
+void kernel_reduce(cuda::std::span<int> buffer, cuda::std::span<int> odata, int size) {
     unsigned int tid = threadIdx.x;
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
 
     extern __shared__ int data[];
 
-    if (i < buffer.size())
+    if (i < size)
         data[tid] = buffer[i];
     else
         data[tid] = 0;
@@ -403,19 +475,27 @@ int compute_total_gpu(const Image& img, cuda::stream& stream, cuda::device_memor
 
     cuda::std::span<int> tmp_span = cuda::std::span(tmp.data(), nb_block);
 
-    int nb_block_reduce = cuda::ceil_div(nb_block, block_size);
     int result;
 
     nvtxRangePop();
 
     nvtxRangePushA("reduce kernel block level");
 
-    kernel_reduce<<<nb_block, block_size, block_size * sizeof(int), stream.get()>>>(input_span, tmp_span);
+    kernel_reduce<<<nb_block, block_size, block_size * sizeof(int), stream.get()>>>(input_span, tmp_span, input_span.size());
 
     nvtxRangePop();
     nvtxRangePushA("reduce kernel grid level");
     
-    kernel_reduce<<<nb_block_reduce, block_size, block_size * sizeof(int), stream.get()>>>(tmp_span, tmp_span);
+    int count = nb_block;
+
+    while (count > 1) {
+        const int next_count = cuda::ceil_div(count, block_size);
+
+        kernel_reduce<<<next_count, block_size, block_size * sizeof(int), stream.get()>>>(tmp_span, input_span, count);
+
+        std::swap(input_span, tmp_span);
+        count = next_count;
+    }
 
     nvtxRangePop();
 
@@ -423,7 +503,7 @@ int compute_total_gpu(const Image& img, cuda::stream& stream, cuda::device_memor
 
     cudaMemcpyAsync(
         &result,
-        tmp.data(),
+        tmp_span.data(),
         sizeof(int),
         cudaMemcpyDeviceToHost,
         stream.get()
