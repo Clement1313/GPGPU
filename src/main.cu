@@ -12,6 +12,7 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <chrono>
 
 #include <nvtx3/nvtx3.hpp>
 
@@ -31,6 +32,14 @@ static Mode parse_mode(int argc, char* argv[])
             std::exit(1);
         }
     return Mode::Cpu;
+}
+
+static bool parse_stats(int argc, char* argv[])
+{
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--stats")
+            return true;
+    return false;
 }
 
 static std::string parse_input(int argc, char* argv[])
@@ -56,6 +65,7 @@ static std::string parse_input(int argc, char* argv[])
 int main(int argc, char* argv[])
 {
     const Mode mode = parse_mode(argc, argv);
+    const bool stats = parse_stats(argc, argv);
 
     // -- Pipeline initialization
 
@@ -114,6 +124,8 @@ int main(int argc, char* argv[])
     std::vector<Image> refs;
     if (mode == Mode::Check)
         refs.resize(nb_images);
+
+    const auto compute_start = std::chrono::steady_clock::now();
 
     #pragma omp parallel for
     for (int i = 0; i < nb_images; ++i)
@@ -187,6 +199,16 @@ int main(int argc, char* argv[])
                     break;
             }
         }
+    }
+
+    if (mode != Mode::Cpu)
+        cudaDeviceSynchronize();
+    if (stats)
+    {
+        const double total_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - compute_start).count();
+        std::cout << "[STATS] " << nb_images << " images, total compute : " << total_ms
+                  << " ms, average per image : " << total_ms / nb_images << " ms" << std::endl;
     }
     
     // - All totals are known, sort images accordingly (OPTIONAL)
