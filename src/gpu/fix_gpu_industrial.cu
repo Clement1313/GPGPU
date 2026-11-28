@@ -58,13 +58,22 @@ void fix_image_industrial(Image& to_fix) {
     device_to_fix.assign(to_fix.buffer, to_fix.buffer + to_fix.size());
     device_fixed.resize(to_fix.size());
 
-    auto end_it = thrust::copy_if(
-        device_to_fix.begin(), device_to_fix.end(),
-        device_fixed.begin(),
-        is_not_garbage()
-    );
+    static thread_local thrust::device_vector<int> num_selected(1);
+    int* select_in = thrust::raw_pointer_cast(device_to_fix.data());
+    int* select_out = thrust::raw_pointer_cast(device_fixed.data());
+    int* select_count = thrust::raw_pointer_cast(num_selected.data());
+    const int select_items = device_to_fix.size();
 
-    int compact_size = end_it - device_fixed.begin();
+    void* temp_storage = nullptr;
+    size_t temp_storage_bytes = 0;
+    cub::DeviceSelect::If(temp_storage, temp_storage_bytes, select_in, select_out, select_count, select_items, is_not_garbage());
+    static thread_local thrust::device_vector<char> temp_buffer3;
+    if (temp_buffer3.size() < temp_storage_bytes)
+        temp_buffer3.resize(temp_storage_bytes);
+    temp_storage = thrust::raw_pointer_cast(temp_buffer3.data());
+    cub::DeviceSelect::If(temp_storage, temp_storage_bytes, select_in, select_out, select_count, select_items, is_not_garbage());
+
+    int compact_size = num_selected[0];
     device_fixed.resize(compact_size);
 
     assert(compact_size == image_size);
@@ -82,11 +91,12 @@ void fix_image_industrial(Image& to_fix) {
     static thread_local thrust::device_vector<int> histogram(256);
     int* out_ptr = thrust::raw_pointer_cast(histogram.data());
 
-    void* temp_storage = nullptr;
-    size_t temp_storage_bytes = 0;
+    temp_storage = nullptr;
+    temp_storage_bytes = 0;
     cub::DeviceHistogram::HistogramEven(temp_storage, temp_storage_bytes, in_ptr, out_ptr, 257, 0, 256, num_items);
     static thread_local thrust::device_vector<char> temp_buffer;
-    temp_buffer.resize(temp_storage_bytes);
+    if (temp_buffer.size() < temp_storage_bytes)
+        temp_buffer.resize(temp_storage_bytes);
     temp_storage = thrust::raw_pointer_cast(temp_buffer.data());
 
     cub::DeviceHistogram::HistogramEven(temp_storage, temp_storage_bytes, in_ptr, out_ptr, 257, 0, 256, num_items);
@@ -98,15 +108,25 @@ void fix_image_industrial(Image& to_fix) {
     cub::DeviceScan::InclusiveSum(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
 
     static thread_local thrust::device_vector<char> temp_buffer2;
-    temp_buffer2.resize(temp_storage_bytes);
+    if (temp_buffer2.size() < temp_storage_bytes)
+        temp_buffer2.resize(temp_storage_bytes);
     temp_storage = thrust::raw_pointer_cast(temp_buffer2.data());
     cub::DeviceScan::InclusiveSum(temp_storage, temp_storage_bytes, out_ptr, out_ptr, 256);
     
     
     // Find the first non-zero value in the cumulative histogram
-    auto first_none_zero = thrust::find_if(histogram.begin(), histogram.end(), not_zero());
-    
-    const int cdf_min = *first_none_zero;
+    static thread_local thrust::device_vector<int> first_none_zero(1);
+    int* found_ptr = thrust::raw_pointer_cast(first_none_zero.data());
+    temp_storage = nullptr;
+    temp_storage_bytes = 0;
+    cub::DeviceFind::FindIf(temp_storage, temp_storage_bytes, out_ptr, found_ptr, not_zero(), 256);
+    static thread_local thrust::device_vector<char> temp_buffer4;
+    if (temp_buffer4.size() < temp_storage_bytes)
+        temp_buffer4.resize(temp_storage_bytes);
+    temp_storage = thrust::raw_pointer_cast(temp_buffer4.data());
+    cub::DeviceFind::FindIf(temp_storage, temp_storage_bytes, out_ptr, found_ptr, not_zero(), 256);
+
+    const int cdf_min = histogram[first_none_zero[0]];
 
     // Apply the map transformation of the histogram equalization
     thrust::transform(device_fixed.begin(), device_fixed.end(), device_fixed.begin(), equalize_pixel{out_ptr, cdf_min, image_size});
@@ -114,8 +134,17 @@ void fix_image_industrial(Image& to_fix) {
     thrust::copy(device_fixed.begin(), device_fixed.end(), to_fix.buffer);
 
     // Compute total
-    uint64_t sum = thrust::reduce(device_fixed.begin(), device_fixed.end(), uint64_t(0));
-    to_fix.to_sort.total = sum;
+    static thread_local thrust::device_vector<uint64_t> sum(1);
+    uint64_t* sum_ptr = thrust::raw_pointer_cast(sum.data());
+    temp_storage = nullptr;
+    temp_storage_bytes = 0;
+    cub::DeviceReduce::Reduce(temp_storage, temp_storage_bytes, in_ptr, sum_ptr, num_items, thrust::plus<uint64_t>(), uint64_t(0));
+    static thread_local thrust::device_vector<char> temp_buffer5;
+    if (temp_buffer5.size() < temp_storage_bytes)
+        temp_buffer5.resize(temp_storage_bytes);
+    temp_storage = thrust::raw_pointer_cast(temp_buffer5.data());
+    cub::DeviceReduce::Reduce(temp_storage, temp_storage_bytes, in_ptr, sum_ptr, num_items, thrust::plus<uint64_t>(), uint64_t(0));
+    to_fix.to_sort.total = sum[0];
 }
 
 // int  compute_total_industrial(const Image& img);
